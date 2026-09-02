@@ -300,6 +300,15 @@
   white-space: nowrap;
 }
 
+.kindBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 16%, transparent);
+  white-space: nowrap;
+}
+
 /* Narrow panes (a horizontal split's half width, or a floated free window):
    the turn header's inline +N/-N summary and the open-in-editor action are
    the first to yield, so the undo action and the file names never clip

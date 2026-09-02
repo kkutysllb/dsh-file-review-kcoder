@@ -18,6 +18,7 @@
  * (replacement copies stay model-only and never belong in a transcript).
  */
 import type { ProducedFileDiff } from '../change-types.ts'
+import { captureArtifacts } from './artifacts.ts'
 import { mutationDetail, terminalDeletions } from './session-changes.ts'
 
 /** One Conversation engine event, narrowed to what the matchers consume. */
@@ -43,6 +44,7 @@ interface DefinitionEvent {
 type CallRecord =
   | { readonly kind: 'mutation'; readonly path: string; readonly hunks: readonly ProducedFileDiff[] }
   | { readonly kind: 'deletion'; readonly paths: readonly string[] }
+  | { readonly kind: 'artifact'; readonly paths: readonly string[] }
   | null
 
 /** Per-turn accumulator state (immutable updates, engine-reduced). */
@@ -93,14 +95,23 @@ export const fileReviewDefinition: ConversationNodeDefinitionLike = {
       const argsRaw = typeof match.event.data.arguments === 'string' ? match.event.data.arguments : ''
       // Same argument-contract vocabulary as the windowed derive: mutation
       // tools reconstruct hunks from their own arguments; the terminals'
-      // rm-family commands are the only deletion record dsh has.
+      // rm-family commands are the only deletion record dsh has; and the
+      // terminals' artifact-producing output grammar (redirects, curl -o,
+      // cp/mv finals — see artifacts.ts) is the non-code produced record.
       const detail = mutationDetail(name, argsRaw)
       let record: CallRecord = null
       if (detail !== null) {
         record = { kind: 'mutation', path: detail.path, hunks: detail.diffs }
       } else {
         const deletions = terminalDeletions(name, argsRaw)
-        if (deletions.length > 0) record = { kind: 'deletion', paths: deletions }
+        if (deletions.length > 0) {
+          record = { kind: 'deletion', paths: deletions }
+        } else {
+          const artifacts = captureArtifacts(name, argsRaw)
+          if (artifacts.length > 0) {
+            record = { kind: 'artifact', paths: artifacts.map(entry => entry.path) }
+          }
+        }
       }
       const calls = new Map(state.calls)
       calls.set(String(match.event.data.callId), record)
@@ -119,6 +130,13 @@ export const fileReviewDefinition: ConversationNodeDefinitionLike = {
       files.set(call.path, {
         diffs: existing === undefined ? [...call.hunks] : [...existing.diffs, ...call.hunks],
       })
+    } else if (call.kind === 'artifact') {
+      for (const path of call.paths) {
+        // Artifacts carry no hunks (nothing to undo) and revive a previously
+        // deleted path, mirroring the mutation-side semantics.
+        const existing = files.get(path)
+        files.set(path, { diffs: existing === undefined ? [] : existing.diffs })
+      }
     } else {
       for (const path of call.paths) {
         const existing = files.get(path)

@@ -12,6 +12,7 @@
  */
 import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ProducedFileDiff, RecordedMutation } from '../change-types.ts'
+import { captureArtifacts } from './artifacts.ts'
 import { deletedPathsFromCommand } from './deleted-paths.ts'
 import type { ConversationFace } from './conversation-store.ts'
 import { diffsFromBeforeAfter } from './recorded-diffs.ts'
@@ -215,7 +216,13 @@ function derive(snapshot: ConversationSnapshot): TurnFileChanges[] {
     // successful terminal call's literal rm-family arguments are the only
     // record of them. They surface as hunk-less, non-undoable entries.
     const deletions = detail === null ? terminalDeletions(call.name, call.argsRaw) : []
-    if (detail === null && deletions.length === 0) continue
+    // Non-code artifacts (images / media / office / reports) produced by the
+    // terminals: captured conservatively from output-indicator shell grammar
+    // (see artifacts.ts) so the review surfaces can preview them.
+    const artifacts = detail === null && deletions.length === 0
+      ? captureArtifacts(call.name, call.argsRaw)
+      : []
+    if (detail === null && deletions.length === 0 && artifacts.length === 0) continue
     const diffs = detail?.diffs ?? []
     const paths = detail !== null ? [detail.path] : []
     const { turn, live } = attribute(node.seq)
@@ -232,6 +239,13 @@ function derive(snapshot: ConversationSnapshot): TurnFileChanges[] {
         existing.diffs.push(...own)
         delete existing.deleted
       }
+    }
+    for (const captured of artifacts) {
+      // An artifact entry carries no hunks (nothing to undo) and revives a
+      // same-turn deleted path, mirroring the mutation-side semantics.
+      const existing = group.files.get(captured.path)
+      if (existing === undefined) group.files.set(captured.path, { diffs: [] })
+      else delete existing.deleted
     }
     for (const path of deletions) {
       const existing = group.files.get(path)

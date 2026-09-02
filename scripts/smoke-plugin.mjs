@@ -64,6 +64,35 @@ try {
 ok('lib/client.js 导出 turnChangesFingerprint/inspectionKey',
   typeof frt?.turnChangesFingerprint === 'function' && typeof frt?.inspectionKey === 'function')
 
+// ─── 行为回归：非代码产物分类与 bash 捕获（预览路由）──────────────────────
+if (typeof frt?.classifyPath === 'function' && typeof frt?.captureArtifacts === 'function') {
+  const { classifyPath, captureArtifacts } = frt
+  ok('分类：图片/视频/音频/office/pdf/文档',
+    classifyPath('a/b.PNG') === 'image' && classifyPath('x.mp4') === 'video'
+    && classifyPath('y.flac') === 'audio' && classifyPath('r.docx') === 'office'
+    && classifyPath('r.pdf') === 'pdf' && classifyPath('r.md') === 'doc')
+  ok('分类：代码扩展名与无扩展名 → code',
+    classifyPath('a/index.ts') === 'code' && classifyPath('Makefile') === 'code'
+    && classifyPath('a.tar.gz') === 'code')
+  const run = (cmd) => captureArtifacts('bash', JSON.stringify({ command: cmd }))
+  ok('捕获：重定向生成图片',
+    run('python plot.py > /dev/null && python gen.py > out/assets/hero.png').some(a => a.path === 'out/assets/hero.png'))
+  ok('捕获：curl -o zip 不算产物、mp4 算',
+    run('curl -sL -o pkg.zip https://x').length === 0
+    && run('curl -sL -o demo.mp4 https://x').some(a => a.path === 'demo.mp4'))
+  ok('捕获：mv/cp 末位参数',
+    run('mv /tmp/shot.png assets/shot.png').some(a => a.path === 'assets/shot.png'))
+  ok('捕获：tee 写 markdown',
+    run('echo hi | tee note.md').some(a => a.path === 'note.md'))
+  ok('捕获：引号目标去引号',
+    run('curl -sL -o "out/clip 01.mp4" https://x').some(a => a.path === 'out/clip 01.mp4'))
+  ok('捕获：纯代码命令零误报',
+    run('node index.ts && npm run build').length === 0
+    && run('echo hi > /dev/null').length === 0)
+  ok('捕获：非 shell 工具不捕获',
+    captureArtifacts('write', JSON.stringify({ file_path: 'a.png', content: 'x' })).length === 0)
+}
+
 if (typeof frt?.turnChangesFingerprint === 'function') {
   const { turnChangesFingerprint: fp, inspectionKey } = frt
   const own = (files) => ({ files })

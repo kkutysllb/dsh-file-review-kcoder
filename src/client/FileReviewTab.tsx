@@ -11,6 +11,7 @@ import {
 import type { ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ISessions, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import { classifyPath, type ArtifactKind } from './artifacts.ts'
 import { resolveConversationStore } from './conversation-store.ts'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type {
@@ -23,11 +24,21 @@ import {
   type SessionFileChange, type TurnFileChanges,
 } from './session-changes.ts'
 import { summarizeDiffs, UnifiedDiff, type UnifiedDiffStats } from './UnifiedDiff.tsx'
-import { t } from './locales.ts'
+import { t, type CopyKey } from './locales.ts'
 import css from './FileReviewTab.module.css'
 
 const SUCCESS_NOTICE_DURATION = 3000
 const ERROR_NOTICE_DURATION = 8000
+
+/** Localized badge copy per artifact class (tab namespace keys). */
+const KIND_LABEL: Readonly<Record<ArtifactKind, CopyKey>> = {
+  image: 'kindImage',
+  video: 'kindVideo',
+  audio: 'kindAudio',
+  office: 'kindOffice',
+  pdf: 'kindPdf',
+  doc: 'kindDoc',
+}
 
 /** Tab component props (a narrowing of better-sidebar's TabComponentProps). */
 export interface FileReviewTabProps {
@@ -295,9 +306,12 @@ export function FileReviewTab({ ctx, sessionId, cwd, visible, tab }: FileReviewT
     }))),
     [renderedTurns],
   )
-  // Deleted entries have nothing to inspect or toggle on the Host side.
+  // Deleted entries have nothing to inspect or toggle on the Host side, and
+  // non-code artifacts carry no hunks — they preview instead of undoing.
   const inspectable = useMemo(
-    () => flat.filter(item => item.deleted !== true),
+    () => flat.filter(item =>
+      item.deleted !== true
+      && !(item.diffs.length === 0 && classifyPath(item.path) !== 'code')),
     [flat],
   )
   // Stable content key: the inspect effect re-fires only when the change SET
@@ -574,7 +588,10 @@ export function FileReviewTab({ ctx, sessionId, cwd, visible, tab }: FileReviewT
             disabled={statusPending || busyKey !== null || reversible.length === 0}
             title={reversible.length === 0 ? t('toggleUnavailable') : undefined}
             onClick={() => {
-              runToggle(turnKey, turn.files.filter(file => file.deleted !== true).map(file => ({
+              // Artifacts (hunk-less, non-code) cannot participate in a
+              // toggle — including them would only report fake failures.
+              runToggle(turnKey, turn.files.filter(file => file.deleted !== true
+                && !(file.diffs.length === 0 && classifyPath(file.path) !== 'code')).map(file => ({
                 turn: turn.turn, path: file.path, diffs: file.diffs,
               })), turnAction)
             }}
@@ -601,6 +618,10 @@ export function FileReviewTab({ ctx, sessionId, cwd, visible, tab }: FileReviewT
     const fileAction: FileReviewAction = state === 'undone' ? 'redo' : 'undo'
     const fileBusy = busyKey === key
     const stats = summarizeDiffs(file.diffs)
+    // Non-code artifacts: no hunks to expand — the row itself opens the
+    // sidebar's file-viewer pipeline (image / media / office / docs).
+    const kind = classifyPath(file.path)
+    const previewable = file.deleted !== true && kind !== 'code'
     return (
       <li
         key={file.path}
@@ -615,22 +636,28 @@ export function FileReviewTab({ ctx, sessionId, cwd, visible, tab }: FileReviewT
           role="button"
           tabIndex={0}
           title={file.path}
-          aria-expanded={isOpen}
-          onClick={() => { toggleExpanded(key) }}
+          aria-expanded={previewable ? undefined : isOpen}
+          onClick={() => {
+            if (previewable) openInEditor(file.path)
+            else toggleExpanded(key)
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
-              toggleExpanded(key)
+              if (previewable) openInEditor(file.path)
+              else toggleExpanded(key)
             }
           }}
         >
-          <Chevron open={isOpen} />
+          {!previewable && <Chevron open={isOpen} />}
           <span className={css.fileName}>{basename(file.path)}</span>
           {file.deleted === true
             ? <span className={css.deletedBadge}>{t('deleted')}</span>
-            : <Stats stats={stats} />}
-          {file.deleted !== true && <StateBadge state={state} />}
-          {file.deleted !== true && (
+            : previewable
+              ? <span className={css.kindBadge}>{t(KIND_LABEL[kind])}</span>
+              : <Stats stats={stats} />}
+          {file.deleted !== true && !previewable && <StateBadge state={state} />}
+          {file.deleted !== true && !previewable && (
             <button
               type="button"
               className={`${css.smallButton} ${css.editorButton}`}
@@ -642,24 +669,26 @@ export function FileReviewTab({ ctx, sessionId, cwd, visible, tab }: FileReviewT
               {t('openInEditor')}
             </button>
           )}
-          <button
-            type="button"
-            className={css.smallButton}
-            disabled={statusPending || busyKey !== null || !reversible}
-            title={file.deleted === true
-              ? t('deletedHint')
-              : (!reversible ? t('toggleUnavailable') : undefined)}
-            onClick={(event) => {
-              event.stopPropagation()
-              runToggle(key, [{ turn: turn.turn, path: file.path, diffs: file.diffs }], fileAction)
-            }}
-          >
-            {fileBusy
-              ? t(fileAction === 'undo' ? 'undoing' : 'redoing')
-              : t(fileAction === 'undo' ? 'undo' : 'redo')}
-          </button>
+          {!previewable && (
+            <button
+              type="button"
+              className={css.smallButton}
+              disabled={statusPending || busyKey !== null || !reversible}
+              title={file.deleted === true
+                ? t('deletedHint')
+                : (!reversible ? t('toggleUnavailable') : undefined)}
+              onClick={(event) => {
+                event.stopPropagation()
+                runToggle(key, [{ turn: turn.turn, path: file.path, diffs: file.diffs }], fileAction)
+              }}
+            >
+              {fileBusy
+                ? t(fileAction === 'undo' ? 'undoing' : 'redoing')
+                : t(fileAction === 'undo' ? 'undo' : 'redo')}
+            </button>
+          )}
         </div>
-        {isOpen && (
+        {isOpen && !previewable && (
           <div className={css.diffWrap}>
             <LazyDiff>
               {file.deleted === true

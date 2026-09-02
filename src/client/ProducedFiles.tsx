@@ -17,8 +17,9 @@ import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation
 import type {
   FileReviewAction, FileReviewRequest, FileReviewResult, ProducedFileReview,
 } from '../change-types.ts'
+import { classifyPath, type ArtifactKind } from './artifacts.ts'
 import { basename } from './turn-deliverables.ts'
-import type { NS } from './chat-locales.ts'
+import type { DeliverablesKey, NS } from './chat-locales.ts'
 import { summarizeDiffs, type UnifiedDiffStats } from './UnifiedDiff.tsx'
 import css from './ProducedFiles.module.css'
 
@@ -95,7 +96,23 @@ export type ProducedFilesProps = Pick<TurnTailOwnerProps, 'openFile' | 'turn'> &
    * rows — a path that recurs in other turns stays collapsed there.
    */
   openInSidebarTab?: (paths: readonly string[], turn?: number) => void
+  /**
+   * Open a non-code artifact (image / media / office / report) through the
+   * sidebar's file-viewer pipeline instead of the diff review tab. Falls
+   * back to the Host `openFile` (OS default app) when absent.
+   */
+  openPreview?: (path: string) => void
 } & PropsLocale<typeof NS>
+
+/** Localized badge copy per artifact class (chat namespace keys). */
+const KIND_LABEL: Readonly<Record<ArtifactKind, DeliverablesKey>> = {
+  image: 'produced.kindImage',
+  video: 'produced.kindVideo',
+  audio: 'produced.kindAudio',
+  office: 'produced.kindOffice',
+  pdf: 'produced.kindPdf',
+  doc: 'produced.kindDoc',
+}
 
 const unavailableChanges = async (request: FileReviewRequest): Promise<FileReviewResult> => ({
   files: request.files.map(file => ({
@@ -249,8 +266,12 @@ export function inspectionKey(
 export function ProducedFiles({
   matched, collectReviews, changesStore, openFile, turn: turnLocation,
   inspectChanges = unavailableChanges, applyChanges = unavailableChanges,
-  openInSidebarTab, t,
+  openInSidebarTab, openPreview, t,
 }: ProducedFilesProps) {
+  // Non-code artifacts open through the sidebar viewer pipeline when the
+  // carrier provides the route; without one they degrade to the Host's
+  // OS-default-application open instead of a useless diff tab.
+  const previewOpen = openPreview ?? openFile
   // The owning turn number (TurnLocation.turn) rides every deep link so the
   // sidebar tab expands this turn's rows only.
   const turnNumber = turnLocation.turn
@@ -470,28 +491,39 @@ export function ProducedFiles({
           </button>
         </header>
         <div className={css.fileList}>
-          {shown.map(({ review, stats }) => (
-            <button
-              key={review.path}
-              type="button"
-              className={css.fileRow}
-              title={review.path}
-              aria-label={t('produced.review', { name: review.path })}
-              onClick={() => { openInSidebarTab?.([review.path], turnNumber) }}
-            >
-              <span className={css.fileName}>{basename(review.path)}</span>
-              {review.deleted === true
-                ? <span className={css.deletedBadge}>{t('produced.deleted')}</span>
-                : (
-                  <Stats
-                    stats={stats}
-                    label={t('review.stats', {
-                      added: String(stats.added), removed: String(stats.removed),
-                    })}
-                  />
-                )}
-            </button>
-          ))}
+          {shown.map(({ review, stats }) => {
+            const kind = classifyPath(review.path)
+            const previewable = review.deleted !== true && kind !== 'code'
+            return (
+              <button
+                key={review.path}
+                type="button"
+                className={css.fileRow}
+                title={review.path}
+                aria-label={previewable
+                  ? t('produced.preview', { name: review.path })
+                  : t('produced.review', { name: review.path })}
+                onClick={() => {
+                  if (previewable) previewOpen(review.path)
+                  else openInSidebarTab?.([review.path], turnNumber)
+                }}
+              >
+                <span className={css.fileName}>{basename(review.path)}</span>
+                {review.deleted === true
+                  ? <span className={css.deletedBadge}>{t('produced.deleted')}</span>
+                  : previewable
+                    ? <span className={css.kindBadge}>{t(KIND_LABEL[kind])}</span>
+                    : (
+                      <Stats
+                        stats={stats}
+                        label={t('review.stats', {
+                          added: String(stats.added), removed: String(stats.removed),
+                        })}
+                      />
+                    )}
+              </button>
+            )
+          })}
           {expandable && (
             <button
               type="button"

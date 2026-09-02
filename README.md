@@ -7,6 +7,7 @@
 ## 功能
 
 - 对话轮尾审查行：每个产出文件的会话自动附审查入口；
+- 非代码产物预览：图片 / 音视频 / Office / PDF / 文档类产出带类型徽标，点击经 dsh-coding-sidebar 的查看器管线（image / pdf / markdown / html 内置，office / video 插件懒加载）预览；bash 重定向、`curl -o`、`cp`/`mv`、`tee` 等产出按已知扩展名保守捕获；
 - 侧边栏 Tab：line-level diff（UnifiedDiff）、产出文件列表（ProducedFiles）、逐 hunk 撤销（undo 服务）；
 - typert 描述符协议（`./typert`）与远程面（`./remote`）随包导出。
 

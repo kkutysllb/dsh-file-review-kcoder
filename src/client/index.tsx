@@ -43,8 +43,10 @@ import { attachLocale, en, LOCALE_NS, t, zh } from './locales.ts'
 import {
   en as chatEn, NS as CHAT_NS, zh as chatZh, type DeliverablesKey,
 } from './chat-locales.ts'
-import { countChangedFiles, deriveTimelineChanges, splitArchivedTurns } from './session-changes.ts'
-import { selectDeliverablePaths } from './turn-deliverables.ts'
+import {
+  countChangedFiles, deriveTimelineChanges, resolveSessionPath, splitArchivedTurns,
+} from './session-changes.ts'
+import { basename, selectDeliverablePaths } from './turn-deliverables.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -333,6 +335,23 @@ export function apply(ctx: Context): void {
             sidebar.openTab({ type: 'file-review', path: first, meta }, scope)
             sidebar.activateTab('file-review', scope)
           },
+          // Non-code artifacts (images / media / office / reports): open the
+          // SIDEBAR's own viewer pipeline — the editor tab runs
+          // matchFileViewer over the path (image / pdf / markdown / html
+          // built-ins; office/video via its viewer plugins) — instead of the
+          // diff review tab, which has no hunks to show for them. Falls back
+          // to the card's Host openFile (OS default app) when the carrier
+          // has no sidebar; ProducedFiles owns that fallback.
+          openPreview: (path: string) => {
+            const sidebar = ctx.betterSidebar
+            if (sidebar === undefined) return
+            const absolute = resolveSessionPath(projectRoot, path)
+            sidebar.openFile(
+              { sessionId, ...(projectRoot !== undefined ? { cwd: projectRoot } : {}) },
+              absolute,
+              basename(absolute),
+            )
+          },
         }
       },
     }, ProducedFiles)),
@@ -362,3 +381,4 @@ export function apply(ctx: Context): void {
 // (scripts/smoke-plugin.mjs asserts the blink-fix invariants on lib/client.js).
 export { turnChangesFingerprint }
 export { inspectionKey }
+export { captureArtifacts, classifyPath } from './artifacts.ts'

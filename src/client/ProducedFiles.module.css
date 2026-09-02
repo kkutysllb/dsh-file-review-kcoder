@@ -613,3 +613,12 @@
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);
   white-space: nowrap;
 }
+
+.kindBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 16%, transparent);
+  white-space: nowrap;
+}
