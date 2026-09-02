@@ -35,10 +35,10 @@ import type {
 } from '../change-types.ts'
 import { TYPERT_REMOTE } from '../remote.ts'
 import { FileReviewTab } from './FileReviewTab.tsx'
-import { resolveConversationStore } from './conversation-store.ts'
+import { resolveConversationStore, turnChangesFingerprint } from './conversation-store.ts'
 import type { ConversationFace } from './conversation-store.ts'
 import { fileReviewDefinition } from './definition.ts'
-import { ProducedFiles } from './ProducedFiles.tsx'
+import { inspectionKey, ProducedFiles } from './ProducedFiles.tsx'
 import { attachLocale, en, LOCALE_NS, t, zh } from './locales.ts'
 import {
   en as chatEn, NS as CHAT_NS, zh as chatZh, type DeliverablesKey,
@@ -295,8 +295,17 @@ export function apply(ctx: Context): void {
           // resolve the underlying store PER CALL so a not-yet-bound session
           // (cold start) self-heals once the service is ready; the wrapper
           // object itself is constant so the hook subscribes exactly once.
+          // getTurnSnapshot hands each card a TURN-SCOPED content fingerprint
+          // (conversation-store.turnChangesFingerprint) instead of the session
+          // face: streaming publications swap the face reference per event,
+          // and a face-keyed subscription re-rendered — and the card's then
+          // identity-keyed effect re-inspected host state on — every mounted
+          // card non-stop while ANY turn ran (the blinking 撤销 button). A
+          // card must re-render only when its OWN turn's review content moves.
           changesStore: {
             getSnapshot: () => getStore()?.getSnapshot() ?? null,
+            getTurnSnapshot: (turn: number) =>
+              turnChangesFingerprint(getStore()?.getSnapshot() ?? null, turn),
             subscribe: (listener: () => void) => getStore()?.subscribe(listener) ?? (() => {}),
           },
           // 审查 button / per-file chip: open (or focus) the sidebar tab with
@@ -348,3 +357,8 @@ export function apply(ctx: Context): void {
     ),
   } satisfies TabDescriptor), 'file-review-tab: register tab')
 }
+
+// Pure helpers re-exported for the package smoke regression checks
+// (scripts/smoke-plugin.mjs asserts the blink-fix invariants on lib/client.js).
+export { turnChangesFingerprint }
+export { inspectionKey }

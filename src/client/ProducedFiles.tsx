@@ -6,7 +6,10 @@
 // edge. The 审查 button and the per-file chips now open the plugin's
 // better-sidebar 'file-review' tab instead, carrying the turn's paths (or the
 // one clicked path) as `meta.expandPaths` so the tab expands exactly those
-// diffs. The Undo/Reapply toggle is unchanged.
+// diffs. The Undo/Reapply toggle re-inspects host state only when the
+// inspection INPUT moves (content key + 300ms trailing debounce, mirroring
+// FileReviewTab) — identity churn from streaming publications must not flip
+// the button's disabled style.
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
@@ -30,6 +33,16 @@ const SHOWN_LIMIT = 6
  */
 export interface ChangesStoreFace {
   getSnapshot(): unknown
+  /**
+   * Turn-scoped reactive value: a content fingerprint of ONE turn's review
+   * data (conversation-store.turnChangesFingerprint), so a card re-renders
+   * only when ITS OWN turn's content moves — not on every session-wide
+   * snapshot publication (fresh reference per streaming event). Optional:
+   * carriers without it fall back to the raw face snapshot, whose identity
+   * churn re-renders more often — harmless now that the inspection effect
+   * below is content-gated.
+   */
+  getTurnSnapshot?(turn: number): unknown
   subscribe(listener: () => void): () => void
 }
 
@@ -220,6 +233,18 @@ function Stats({ stats, label }: { readonly stats: UnifiedDiffStats; readonly la
   )
 }
 
+/**
+ * Content key of a host-state inspection input: paths plus hunk counts.
+ * Identity-stable across re-derivations — two freshly-allocated arrays with
+ * the same files produce the same key, an appended hunk changes it. Exported
+ * for the smoke regression checks (the blink fix's core invariant).
+ */
+export function inspectionKey(
+  files: readonly { readonly path: string; readonly diffs: readonly unknown[] }[],
+): string {
+  return files.map(file => `${file.path}#${file.diffs.length}`).join('|')
+}
+
 /** Render one turn's produced files as a summary card opening the sidebar tab. */
 export function ProducedFiles({
   matched, collectReviews, changesStore, openFile, turn: turnLocation,
@@ -231,14 +256,18 @@ export function ProducedFiles({
   const turnNumber = turnLocation.turn
   // The chip list follows the built-in deliverables paths (the claim input);
   // hunks/deletion state join from the snapshot derive where available.
-  // changesVersion is the reactive trigger: the conversation snapshot
-  // reference moves whenever turn Location data (this plugin's Definition)
-  // publishes or updates, and each move re-derives the reviews below —
-  // otherwise a card mounted before its turn's data landed would stay at
-  // +0 -0 until reload.
+  // changesVersion is the reactive trigger — TURN-SCOPED when the carrier
+  // exposes getTurnSnapshot: the subscription value is this turn's content
+  // fingerprint, so the streaming snapshot churn of a LATER turn (every
+  // token flush swaps the session face reference) no longer re-renders this
+  // card at all, and each move re-derives the reviews below only when this
+  // turn's own content actually moved — otherwise a card mounted before its
+  // turn's data landed would stay at +0 -0 until reload.
   const changesVersion = useSyncExternalStore(
     changesStore?.subscribe ?? subscribeNever,
-    changesStore?.getSnapshot ?? getNullSnapshot,
+    changesStore === undefined
+      ? getNullSnapshot
+      : () => changesStore.getTurnSnapshot?.(turnNumber) ?? changesStore.getSnapshot(),
   )
   const reviews = useMemo<readonly ProducedFileReview[]>(() => {
     const derived = collectReviews?.(turnNumber)
@@ -267,6 +296,9 @@ export function ProducedFiles({
   const toggleFiles = useMemo(() => reviews
     .filter(review => review.deleted !== true)
     .map(review => ({ path: review.path, diffs: review.diffs })), [reviews])
+  // Content key of the inspection input — identity churn (fresh arrays on
+  // every re-derivation) compares equal here; appended hunks do not.
+  const toggleKey = useMemo(() => inspectionKey(toggleFiles), [toggleFiles])
   const reversiblePaths = useMemo(() => new Set(reviews.filter(review =>
     review.diffs.length > 0 && review.diffs.every(diff =>
       diff.path === review.path
@@ -275,8 +307,12 @@ export function ProducedFiles({
       && (diff.oldText !== '' || diff.oldStart !== undefined)
       && (diff.newText !== '' || diff.newStart !== undefined))).map(review => review.path)), [reviews])
   const hasReversibleFiles = reversiblePaths.size > 0
-  const shown = reviewsWithStats.slice(0, SHOWN_LIMIT)
-  const hidden = reviewsWithStats.length - shown.length
+  // The card stays compact by default (SHOWN_LIMIT rows); the trailing row is
+  // a real toggle — clicking it expands the FULL list inline and back.
+  const [expanded, setExpanded] = useState(false)
+  const expandable = reviewsWithStats.length > SHOWN_LIMIT
+  const shown = expanded ? reviewsWithStats : reviewsWithStats.slice(0, SHOWN_LIMIT)
+  const hidden = expanded ? 0 : reviewsWithStats.length - shown.length
   const allPaths = useMemo(() => reviews.map(review => review.path), [reviews])
   // A turn that only deleted files reads as a deletion summary, not an edit.
   const allDeleted = reviews.length > 0 && reviews.every(review => review.deleted === true)
@@ -299,23 +335,51 @@ export function ProducedFiles({
       : currentAction
   }, [reversiblePaths])
 
+  // Re-inspect host state only when the inspection INPUT moves. During agent
+  // execution the session snapshot churn re-derives toggleFiles (fresh array
+  // identity) per streaming publication; the original identity-keyed effect
+  // re-ran per move — setStatusPending(true) → host status RPC →
+  // setStatusPending(false) — flipping the toggle button's disabled style
+  // (opacity .45 ↔ 1) non-stop: the reported "撤销 button blinks while the
+  // agent runs". Mirror the sidebar tab (FileReviewTab): a content key gates
+  // the run, a 300ms trailing debounce collapses a burst into ONE host
+  // round-trip after a quiet window, and the last-inspected stamp (inspector
+  // identity + key) makes identical re-derivations free.
+  const inspectedRef = useRef<{ inspector: unknown; key: string } | null>(null)
   useEffect(() => {
+    const inspected = inspectedRef.current
+    if (inspected !== null && inspected.inspector === inspectChanges && inspected.key === toggleKey) return
+    if (toggleFiles.length === 0) {
+      // Nothing to inspect: settle immediately (the button stays disabled
+      // through hasReversibleFiles) and stamp so churn cannot re-run this.
+      inspectedRef.current = { inspector: inspectChanges, key: toggleKey }
+      setStatusPending(false)
+      return
+    }
     let active = true
     setStatusPending(true)
-    void inspectChanges({ action: 'undo', files: toggleFiles }).then((result) => {
-      if (!active) return
-      const allUndone = reversiblePaths.size > 0
-        && [...reversiblePaths].every(path =>
-          result.files.find(file => file.path === path)?.state === 'undone')
-      setToggleAction(allUndone ? 'redo' : 'undo')
-    }).catch(() => {
-      // The action remains usable after a transient inspection failure; execution
-      // performs the same Host-side checks again.
-    }).finally(() => {
-      if (active) setStatusPending(false)
-    })
-    return () => { active = false }
-  }, [inspectChanges, reversiblePaths, toggleFiles])
+    const timer = window.setTimeout(() => {
+      void inspectChanges({ action: 'undo', files: toggleFiles }).then((result) => {
+        if (!active) return
+        inspectedRef.current = { inspector: inspectChanges, key: toggleKey }
+        const allUndone = reversiblePaths.size > 0
+          && [...reversiblePaths].every(path =>
+            result.files.find(file => file.path === path)?.state === 'undone')
+        setToggleAction(allUndone ? 'redo' : 'undo')
+      }).catch(() => {
+        // The action remains usable after a transient inspection failure; execution
+        // performs the same Host-side checks again. Unstamped: the next real
+        // input change re-inspects, matching the tab's single-attempt policy.
+      }).finally(() => {
+        if (active) setStatusPending(false)
+      })
+    }, 300)
+    return () => { active = false; window.clearTimeout(timer) }
+    // reversiblePaths rides the closure from this run's render (worst case
+    // 300ms stale, same as the pre-fix synchronous capture); adding it to the
+    // deps would re-inspect on every identity churn — the bug being fixed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspectChanges, toggleFiles, toggleKey])
 
   const runToggle = useCallback(() => {
     if (statusPending || togglePending || !hasReversibleFiles) return
@@ -428,12 +492,19 @@ export function ProducedFiles({
                 )}
             </button>
           ))}
-          {hidden > 0 && (
-            <div className={css.moreFiles}>
-              {hidden === 1
-                ? t('produced.moreOne')
-                : t('produced.more', { count: String(hidden) })}
-            </div>
+          {expandable && (
+            <button
+              type="button"
+              className={css.moreFiles}
+              aria-expanded={expanded}
+              onClick={() => { setExpanded(value => !value) }}
+            >
+              {expanded
+                ? t('produced.collapse')
+                : (hidden === 1
+                  ? t('produced.moreOne')
+                  : t('produced.more', { count: String(hidden) }))}
+            </button>
           )}
         </div>
       </section>

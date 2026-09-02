@@ -22,6 +22,8 @@
  * disposal (HMR / plugin disable) unregisters cleanly.
  */
 import type { Context } from '@deepseek-ai/cordis';
+import { turnChangesFingerprint } from './conversation-store.ts';
+import { inspectionKey } from './ProducedFiles.tsx';
 import { type DeliverablesKey } from './chat-locales.ts';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
@@ -45,4 +47,6 @@ export declare const inject: string[];
  * @param ctx - client root context.
  */
 export declare function apply(ctx: Context): void;
+export { turnChangesFingerprint };
+export { inspectionKey };
 //# sourceMappingURL=index.d.ts.map

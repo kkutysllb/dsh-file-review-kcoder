@@ -10,11 +10,21 @@
 - 侧边栏 Tab：line-level diff（UnifiedDiff）、产出文件列表（ProducedFiles）、逐 hunk 撤销（undo 服务）；
 - typert 描述符协议（`./typert`）与远程面（`./remote`）随包导出。
 
-## 安装
+## 安装 / Install
 
 ```bash
-dsh plugin install dsh-file-review-kcoder
+# npm registry（推荐：版本可被插件管理检测，更新由用户手动触发）
+# npm registry (recommended: version detection with manual updates)
+dsh plugin --profile web add dsh-file-review-kcoder
+
+# GitHub 直装 / install straight from GitHub
+dsh plugin --profile web add github:kkutysllb/dsh-file-review-kcoder
 ```
+
+- 要求 dsh `0.1.2-alpha.1+`（对话快照路由 / 原生 deliverables 词汇），建议 `0.1.2-alpha.4+`；
+- 侧边栏 Tab 依赖 `dsh-coding-sidebar`（optional peer——未装时仅对话轮尾审查行可用）；
+- `package.json` 的 `version` 是插件管理检测新版本的信号，更新由用户手动触发；
+- npm 发线与 GitHub 发线同版本号发布，每版变更说明见 [`release/`](release/)。
 
 ## 依赖契约
 

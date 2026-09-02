@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -31,6 +32,7 @@ ok('lib/client.js 存在', src('lib/client.js') !== null)
 ok('dsh.bundle.patch 声明', pkg.dsh?.bundle?.patch === './cordis.patch.yml')
 const patch = src('cordis.patch.yml') ?? ''
 ok('patch name 指向新包名', patch.includes("name: '" + PKG_NAME + "'") || patch.includes('name: "' + PKG_NAME + '"'))
+ok('YAML 无裸 @ 值（patch 行，@ 为 anchor 保留字须引号）', !/:\s+@/.test(patch))
 const inject = JSON.stringify(pkg.dsh?.client?.inject ?? [])
 ok('inject 含 dsh-coding-sidebar', inject.includes('dsh-coding-sidebar'), inject)
 ok('peer dsh-coding-sidebar optional', pkg.peerDependencies?.['dsh-coding-sidebar'] !== undefined
@@ -46,6 +48,75 @@ for (const f of ['cordis.patch.yml', 'lib/index.js', 'lib/client.js']) {
   for (const n of legacy) if (s.includes(n)) residue.push(f + ' → ' + n)
 }
 ok('产物面旧名零残留', residue.length === 0, residue.join('; '))
+
+// ─── 行为回归：撤销按钮闪烁修复（v1.0.1）────────────────────────────────
+// 产物是 window.__ModuleLoader__ 横幅的 CJS；node 下先垫 window 捕获工厂
+// 返回值，再动态 import，直接检验真实发布物的行为不变量。
+let frt = null
+globalThis.window = {
+  __ModuleLoader__: { load: ({ factory }) => { frt = factory(() => ({})) } },
+}
+try {
+  await import(pathToFileURL(join(ROOT, 'lib', 'client.js')).href)
+} catch (error) {
+  ok('lib/client.js 可在 node 下加载', false, String(error))
+}
+ok('lib/client.js 导出 turnChangesFingerprint/inspectionKey',
+  typeof frt?.turnChangesFingerprint === 'function' && typeof frt?.inspectionKey === 'function')
+
+if (typeof frt?.turnChangesFingerprint === 'function') {
+  const { turnChangesFingerprint: fp, inspectionKey } = frt
+  const own = (files) => ({ files })
+  const faceWith = (turnDataMap) => ({
+    legacy: { nodes: [], turnEnds: new Map() },
+    timeline: {
+      turnOrder: [3, 7],
+      turns: new Map([
+        [3, { turn: 3, status: 'closed', data: turnDataMap }],
+        [7, { turn: 7, status: 'closed', data: new Map() }],
+      ]),
+    },
+  })
+  const dataA = new Map([
+    ['fileReviewChanges', own([{ path: 'a.py', diffs: [1, 2] }, { path: 'b.py', diffs: [3] }])],
+    ['deliverables', { produced: [{ seq: 5, path: 'a.py' }, { seq: 6, path: 'b.py' }] }],
+  ])
+  const face1 = faceWith(dataA)
+
+  // 不变量一（闪烁根因）：快照引用更换但本 turn 内容未变 → 指纹必须相等。
+  // 修复前的订阅以 face 引用为键，流式发布每次换引用 → 每张历史卡片不停重渲染。
+  const face2 = faceWith(new Map([...dataA])) // 新 face、新 Map、同内容
+  ok('指纹：引用更换+内容不变 → 相等（流式抖动免疫）',
+    fp(face1, 3) === fp(face2, 3), `${fp(face1, 3)} vs ${fp(face2, 3)}`)
+
+  // 不变量二：本 turn 内容变动（追加 hunk）→ 指纹必须变化。
+  const face3 = faceWith(new Map([
+    ['fileReviewChanges', own([{ path: 'a.py', diffs: [1, 2, 4] }, { path: 'b.py', diffs: [3] }])],
+    ['deliverables', dataA.get('deliverables')],
+  ]))
+  ok('指纹：本 turn 追加 hunk → 变化', fp(face1, 3) !== fp(face3, 3))
+
+  // 不变量三：turn 隔离——别的 turn 内容变动不影响本卡片。
+  ok('指纹：其他 turn 变动 → 本 turn 指纹不变', fp(face1, 7) === fp(face3, 7))
+
+  // 不变量四：deliverables 回退路径（own 无 files 时 derive 落到内置数据）。
+  const face4 = faceWith(new Map([['deliverables', { produced: [{ seq: 5, path: 'a.py' }] }]]))
+  const face5 = faceWith(new Map([['deliverables', { produced: [{ seq: 5, path: 'a.py' }, { seq: 9, path: 'c.py' }] }]]))
+  ok('指纹：deliverables 回退追加 → 变化', fp(face4, 3) !== fp(face5, 3))
+  ok('指纹：deliverables 回退同内容 → 相等', fp(face4, 3) === fp(faceWith(new Map([['deliverables', { produced: [{ seq: 5, path: 'a.py' }] }]])), 3))
+
+  // 不变量五：无 timeline 的窗口回退以窗口形状为键（可过触发，不可漏触发）。
+  const win1 = { legacy: { nodes: [1, 2], turnEnds: new Map([[3, 9]]) }, timeline: undefined }
+  const win2 = { legacy: { nodes: [1, 2, 3], turnEnds: new Map([[3, 9]]) }, timeline: undefined }
+  ok('指纹：窗口回退随窗口形状变化', fp(win1, 3) !== fp(win2, 3) && fp(win1, 3) === fp({ ...win1 }, 3))
+  ok('指纹：null face → none', fp(null, 3) === 'none')
+
+  // 巡检内容键：派生数组身份更换但内容相同 → 键相等；追加 hunk → 键变化。
+  ok('inspectionKey：身份更换+同内容 → 相等',
+    inspectionKey([{ path: 'a.py', diffs: [1] }]) === inspectionKey([{ path: 'a.py', diffs: [1] }]))
+  ok('inspectionKey：追加 hunk → 变化',
+    inspectionKey([{ path: 'a.py', diffs: [1] }]) !== inspectionKey([{ path: 'a.py', diffs: [1, 2] }]))
+}
 
 let fail = 0
 for (const [name, pass, detail] of checks) {

@@ -60,6 +60,57 @@ export interface ConversationStore {
   subscribe(listener: () => void): () => void
 }
 
+/**
+ * Turn-scoped content fingerprint for the turn-tail card's reactive
+ * subscription. The session chat source publishes a fresh snapshot reference
+ * per streaming event (token flushes, per-event Definition republications —
+ * see index.tsx badgeCount), so a subscription keyed on the face reference
+ * re-rendered every mounted card non-stop while ANY turn ran, and the card's
+ * identity-keyed inspection effect turned that churn into a disabled-state
+ * flicker on the 撤销 button (statusPending true → host status RPC → false,
+ * per publication). This fingerprint instead moves only when ONE turn's
+ * review content moves: the own Definition data signature (paths + hunk
+ * counts + deletion flags — the engine APPENDS hunks, definition.ts update(),
+ * so counts are monotonic and faithful) plus the built-in deliverables
+ * fallback signature (the derive falls back to it when own data has no
+ * files, session-changes.deriveTimelineChanges). A string on purpose:
+ * recomputation stays Object.is-stable for useSyncExternalStore.
+ * @param face - resolved conversation face (null before the view assembles).
+ * @param turn - the card's owning turn number.
+ * @returns Content signature; equal across content-preserving republications.
+ */
+export function turnChangesFingerprint(face: ConversationFace | null, turn: number): string {
+  if (face === null) return 'none'
+  const timeline = face.timeline
+  if (timeline === undefined) {
+    // Windowed fallback: the derive walks the legacy transcript, so content
+    // moves with the window's shape. Coarse counters — this path may
+    // over-trigger during streaming (harmless: re-derivations are cheap and
+    // the card's inspection effect is content-gated), never under-trigger.
+    let lastEnd = 0
+    for (const endSeq of face.legacy.turnEnds.values()) lastEnd = endSeq
+    return `win:${face.legacy.nodes.length}:${face.legacy.turnEnds.size}:${lastEnd}`
+  }
+  const data = timeline.turns.get(turn)?.data
+  const own = data?.get('fileReviewChanges') as
+    | { files?: readonly { path: string; diffs: readonly unknown[]; deleted?: true }[] }
+    | undefined
+  const parts: string[] = []
+  if (own?.files !== undefined) {
+    for (const file of own.files) {
+      parts.push(`${file.path}#${file.diffs.length}${file.deleted === true ? 'D' : ''}`)
+    }
+  }
+  const builtIn = data?.get('deliverables') as
+    | { produced?: readonly { seq: number; path: string }[] }
+    | undefined
+  const produced = builtIn?.produced
+  if (produced !== undefined) {
+    parts.push(`dl:${produced.length}:${produced.at(-1)?.seq ?? 0}`)
+  }
+  return `t${turn}:${parts.join('|')}`
+}
+
 /** Read a service without the inject requirement (ctx.get, then reflect). */
 function lookupService(ctx: Context, name: string): unknown {
   const anyCtx = ctx as unknown as { get?: (name: string) => unknown }
