@@ -53,6 +53,12 @@ export type ProducedFilesProps = Pick<TurnTailOwnerProps, 'openFile' | 'turn'> &
      * rows — a path that recurs in other turns stays collapsed there.
      */
     openInSidebarTab?: (paths: readonly string[], turn?: number) => void;
+    /**
+     * Open a non-code artifact (image / media / office / report) through the
+     * sidebar's file-viewer pipeline instead of the diff review tab. Falls
+     * back to the Host `openFile` (OS default app) when absent.
+     */
+    openPreview?: (path: string) => void;
 } & PropsLocale<typeof NS>;
 /**
  * Content key of a host-state inspection input: paths plus hunk counts.
@@ -65,5 +71,5 @@ export declare function inspectionKey(files: readonly {
     readonly diffs: readonly unknown[];
 }[]): string;
 /** Render one turn's produced files as a summary card opening the sidebar tab. */
-export declare function ProducedFiles({ matched, collectReviews, changesStore, openFile, turn: turnLocation, inspectChanges, applyChanges, openInSidebarTab, t, }: ProducedFilesProps): import("react").JSX.Element;
+export declare function ProducedFiles({ matched, collectReviews, changesStore, openFile, turn: turnLocation, inspectChanges, applyChanges, openInSidebarTab, openPreview, t, }: ProducedFilesProps): import("react").JSX.Element;
 //# sourceMappingURL=ProducedFiles.d.ts.map

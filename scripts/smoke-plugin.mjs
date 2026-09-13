@@ -147,6 +147,68 @@ if (typeof frt?.turnChangesFingerprint === 'function') {
     inspectionKey([{ path: 'a.py', diffs: [1] }]) !== inspectionKey([{ path: 'a.py', diffs: [1, 2] }]))
 }
 
+// ─── 行为回归：轮尾链全量认领（dsh 0.1.5 交付物卡片兼容）────────────────
+// dsh 0.1.5-alpha.2 起 `present` 工具把显式交付写进同一份 deliverables
+// turn data（presented 字段），内置 ui-deliverables 行据此渲染交付卡片。
+// 轮尾槽是 CHAIN：首个非 null 选择器独占该行。此前选择器只看 produced，
+// 于是「既改文件又 present」的轮次会把新交付卡片整段吞掉（用户报的冲突）。
+// 下列不变量锁住修复面：认领必须同时读取两个面，并由本插件渲染两段。
+if (typeof frt?.selectDeliverables === 'function' && typeof frt?.presentedForClosing === 'function') {
+  const { selectDeliverables, presentedForClosing } = frt
+  const owner = (turnData) => ({ turn: { turn: 4, data: turnData }, seq: 90, openFile: () => {} })
+  const delivered = (path, seq, index, description) => (
+    description === undefined ? { path, seq, index } : { path, seq, index, description })
+  const claimed = (turnData) => selectDeliverables(owner(turnData))
+
+  // 冲突主案：produced 非空 + presented 非空 → 必须同时带回两段。
+  const mixed = claimed(new Map([
+    ['deliverables', { produced: [{ seq: 10, path: 'src/a.ts' }], presented: [delivered('out/report.html', 11, 0, '报告')] }],
+  ]))
+  ok('认领：produced+presented 同时带回（交付卡片不再被吞）',
+    mixed !== null && mixed.produced.length === 1 && mixed.presented.length === 1
+    && mixed.presented[0].path === 'out/report.html' && mixed.presented[0].description === '报告'
+    && mixed.presented[0].seq === 11 && mixed.presented[0].index === 0)
+
+  // 仅交付（bash 产物 + present，无 write/edit）→ 也必须认领，否则同一功能
+  // 在轮次间出现两种行样式。
+  const only = claimed(new Map([
+    ['deliverables', { produced: [], presented: [delivered('out/hero.png', 12, 0)] }],
+  ]))
+  ok('认领：仅交付轮次同样认领（行样式一致）',
+    only !== null && only.produced.length === 0 && only.presented.length === 1
+    && only.presented[0].path === 'out/hero.png')
+
+  ok('认领：空轮次让位（返回 null → 链上后续条目接手）',
+    claimed(new Map([['deliverables', { produced: [], presented: [] }]])) === null
+    && claimed(new Map()) === null)
+
+  // closing seq 之后落地的交付属于下一轮，必须排除。
+  ok('认领：closing seq 之后的交付被排除',
+    presentedForClosing({ produced: [], presented: [delivered('late.md', 90, 0), delivered('early.md', 89, 0)] }, 90)
+      .map(file => file.path).join(',') === 'early.md')
+
+  // 同一路径重复 present → 位置取首次、描述取最新；畸形行丢弃。
+  ok('认领：重复交付去重且描述取最新',
+    presentedForClosing({
+      produced: [],
+      presented: [delivered('a.md', 5, 0, '旧'), delivered('b.md', 6, 0), delivered('a.md', 7, 1, '新')],
+    }, 90).map(file => `${file.path}:${file.description ?? ''}`).join('|') === 'a.md:新|b.md:')
+  ok('认领：畸形交付行被丢弃（不渲染坏坐标）',
+    presentedForClosing({
+      produced: [],
+      presented: [delivered('ok.md', 5, 0), { path: '  ', seq: 5, index: 1 }, { path: 'x.md', seq: 5 },
+        { path: 'y.md', seq: 5, index: 2, description: 7 }, null],
+    }, 90).map(file => file.path).join(',') === 'ok.md')
+
+  // 本插件自己的 Definition 数据优先，但仍要带回交付段。
+  const own = claimed(new Map([
+    ['fileReviewChanges', { files: [{ path: 'own.ts' }] }],
+    ['deliverables', { produced: [{ seq: 10, path: 'builtin.ts' }], presented: [delivered('out.zip', 11, 0)] }],
+  ]))
+  ok('认领：自有 Definition 优先且保留交付段',
+    own !== null && own.produced.join(',') === 'own.ts' && own.presented.length === 1)
+}
+
 let fail = 0
 for (const [name, pass, detail] of checks) {
   console.log((pass ? '  ✓ ' : '  ✗ ') + name + (pass || !detail ? '' : ' — ' + detail))

@@ -12,7 +12,10 @@
  *    turn Location data — this plugin registers no Definition of its own, a
  *    second `deliverables` kind would collide with and crash the built-in);
  *    the card's diff stats and undo ride the session derive (session-changes
- *    argument-contract reconstruction); and
+ *    argument-contract reconstruction). Because an elected chain entry owns
+ *    the WHOLE row, the registered component is `Deliverables`, which also
+ *    renders dsh 0.1.5-alpha.2's explicit-delivery cards (`present`) — see
+ *    Deliverables.tsx; and
  * 2. the 'file-review' better-sidebar tab (per-session change list + inline
  *    red/green diffs + per-turn/per-file undo).
  *
@@ -49,4 +52,7 @@ export declare const inject: string[];
 export declare function apply(ctx: Context): void;
 export { turnChangesFingerprint };
 export { inspectionKey };
+export { captureArtifacts, classifyPath } from './artifacts.ts';
+export { presentedForClosing, selectDeliverables } from './turn-deliverables.ts';
+export { Deliverables } from './Deliverables.tsx';
 //# sourceMappingURL=index.d.ts.map
