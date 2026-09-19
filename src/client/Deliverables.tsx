@@ -17,8 +17,9 @@
 // deliveries, which is the documented flow ("call present after writing it").
 
 import type { SessionStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
-import type { DeliverablesMatch } from './turn-deliverables.ts'
+import { selectDeliverables, type DeliverablesMatch } from './turn-deliverables.ts'
 import type { PresentedOpenController } from './present-open.ts'
+import type { ReactElement } from 'react'
 import { PresentedFiles } from './PresentedFiles.tsx'
 import { ProducedFiles, type ProducedFilesProps } from './ProducedFiles.tsx'
 
@@ -42,6 +43,24 @@ export type DeliverablesProps =
  * @param props - match, inject face, and the Session standard share.
  * @returns the changed-files card, the delivery cards, or both.
  */
+/**
+ * List-mode turn-tail wrapper (dsh 0.1.6-alpha.2): the slot became a list —
+ * no select callback runs before mount, so the claim computation moved here
+ * and re-runs on every render. Declines (null) when the turn produced
+ * nothing and declared no deliveries; otherwise renders the enhanced card.
+ * Structural owner face: the type baseline this plugin builds against
+ * predates the list-mode shapes (same recipe as the turn-data reads).
+ */
+export function FileReviewTurnTail(props: DeliverablesProps & {
+  readonly turn?: unknown
+  readonly seq?: unknown
+}): ReactElement | null {
+  const owner = props as unknown as Parameters<typeof selectDeliverables>[0]
+  const matched = selectDeliverables(owner)
+  if (matched === null) return null
+  return <Deliverables {...props} matched={matched} />
+}
+
 export function Deliverables({ matched, presentedController, sessionId, ...card }: DeliverablesProps) {
   const { produced, presented } = matched
   return (

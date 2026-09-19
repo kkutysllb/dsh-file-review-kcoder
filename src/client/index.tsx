@@ -41,7 +41,7 @@ import { FileReviewTab } from './FileReviewTab.tsx'
 import { resolveConversationStore, turnChangesFingerprint } from './conversation-store.ts'
 import type { ConversationFace } from './conversation-store.ts'
 import { fileReviewDefinition } from './definition.ts'
-import { Deliverables } from './Deliverables.tsx'
+import { FileReviewTurnTail } from './Deliverables.tsx'
 import { inspectionKey } from './ProducedFiles.tsx'
 import { PresentedOpenController } from './present-open.ts'
 import { attachLocale, en, LOCALE_NS, t, zh } from './locales.ts'
@@ -233,20 +233,28 @@ export function apply(ctx: Context): void {
   }, 'file-review-tab: session-wide Definition')
 
   // The chat turn-tail row — the original dsh-file-review card, verbatim.
-  // priority -2 runs BEFORE dsh-coding-sidebar's -1 interception row: chain
-  // election is first-claim-wins in ascending priority order, so this row
-  // renders and the sidebar's chip row declines (never a double row). The
-  // claim input is the BUILT-IN ui-deliverables turn data (paths only); the
-  // card's hunks/stats/undo are reconstructed per turn from the session
-  // snapshot derive (the same argument-contract vocabulary the tab uses).
-  // The same turn data now also carries `presented` (explicit deliveries,
-  // dsh >= 0.1.5-alpha.2): the claim reads both faces and `Deliverables`
-  // renders both sections, so electing the chain never hides the built-in
-  // delivery cards. When this plugin is composed out, the built-in row (or
-  // the -1 chip row) takes over again — the off state needs no cleanup here.
+  // dsh 0.1.6-alpha.2 适配（2026-09-19）：槽位从 chain（select 选举 +
+  // priority 抢占）改为 list（id 必需，各自渲染自己的行）。旧的
+  // priority -2 先于 dsh-coding-sidebar -1 抢占的协作不复存在，改为
+  // 共存协调：本行认领 produced/presented 非空的 turn（匹配判定移入
+  // 组件每次渲染重算）；coding-sidebar 侧（1.0.19 起）在读到本插件的
+  // turn data 时退位，原生 ui-deliverables 卡由宿主侧配置关闭——同一
+  // turn 永不双行。claim 输入不变：BUILT-IN deliverables turn data
+  //（paths）+ 自有 fileReviewChanges 定义（完整 hunks）；presented
+  // 两段照旧由 Deliverables 渲染。本插件未组入时其余行自然接管。
   ctx.effect(
-    () => ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+    () => ctx.slots.inject('conversation.chat.turnTail', () => {
+    // const 持有后再传入：非新鲜字面量，旧类型基线（无 id 字段）不做
+    // 多余属性检查；alpha.2 运行时按 id 走 list 匹配
+    const turnTailOptions = {
+      // 双轨注册（2026-09-19）：id 是 0.1.6-alpha.2 list 语义必需；
+      // select/priority 保留给 pre-alpha.2 的 chain 引擎（旧类型基线下
+      // select 为必填）。alpha.2 运行时忽略 select/priority、按 id 走
+      // list 匹配（组件内重算）。本对象经 return 直接传入——非独立声明的
+      // 新鲜字面量在旧类型下仍会触发多余属性检查，故下方 register 调用
+      // 以变量持有绕开（见 register 调用处注释）。
       name: 'conversation.chat.turnTail',
+      id: 'dsh-file-review-tab',
       select: selectDeliverables,
       priority: -2,
       locale: CHAT_NS,
@@ -376,7 +384,9 @@ export function apply(ctx: Context): void {
           presentedController: presentedOpen,
         }
       },
-    }, Deliverables)),
+    } as const
+    return ctx.slots.register(turnTailOptions, FileReviewTurnTail)
+    }),
     'file-review-tab: turn-tail row',
   )
 
