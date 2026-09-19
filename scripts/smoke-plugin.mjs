@@ -209,6 +209,48 @@ if (typeof frt?.selectDeliverables === 'function' && typeof frt?.presentedForClo
     own !== null && own.produced.join(',') === 'own.ts' && own.presented.length === 1)
 }
 
+// ─── 行为回归：原生侧边栏接管（changes-review 地址 → 本插件页签）──────────
+// 产品铁律 1 的执行点（docs/ARCHITECTURE.md §12「不使用上游原生侧边栏功能」）：
+// 上游 changed-files 卡的「审查」手势发 dsh-resource://changes-review/session/
+// <id>/<seq>/<turn>，而 coding-sidebar 的文件打开门只认 dsh-resource://file/…
+// 家族——没人认领就落回原生右栏，原生外壳被产品侧压制 → 用户看到的是一片空白。
+if (typeof frt?.parseChangesReviewAddress === 'function') {
+  const { parseChangesReviewAddress, wrapChangesReviewOpen } = frt
+  const at = value => JSON.stringify(parseChangesReviewAddress(value))
+  ok('接管：评审地址解析（含百分号编码的 Session id）',
+    at('dsh-resource://changes-review/session/abc/42/7') === '{"sessionId":"abc","seq":42,"turn":7}'
+    && at('dsh-resource://changes-review/session/s%2F1%20x/0/1') === '{"sessionId":"s/1 x","seq":0,"turn":1}')
+  ok('接管：非评审地址一律不认领（文件族 / 段数 / 空 id / 非数字 / 坏转义 / 非字符串）',
+    at('dsh-resource://file/session/abc/a.ts') === undefined
+    && at('dsh-resource://changes-review/session/abc/42') === undefined
+    && at('dsh-resource://changes-review/session/abc/42/7/extra') === undefined
+    && at('dsh-resource://changes-review/session//42/7') === undefined
+    && at('dsh-resource://changes-review/session/abc/x/7') === undefined
+    && at('dsh-resource://changes-review/session/abc/42/0') === undefined
+    && at('dsh-resource://changes-review/session/%E0%A4%A/42/7') === undefined
+    && at(undefined) === undefined && at(null) === undefined && at(42) === undefined)
+  if (typeof wrapChangesReviewOpen === 'function') {
+    const original = []
+    const right = { openResource(address, options) { original.push([address, options]) } }
+    const before = right.openResource
+    const claimed = []
+    const dispose = wrapChangesReviewOpen(right, coordinates => { claimed.push(coordinates) })
+    right.openResource('dsh-resource://changes-review/session/s1/5/3', { params: { index: 0 } })
+    right.openResource('dsh-resource://file/session/s1/a.ts')
+    ok('接管：评审地址被认领、其余地址原样透传',
+      JSON.stringify(claimed) === '[{"sessionId":"s1","seq":5,"turn":3}]'
+      && original.length === 1 && original[0][0] === 'dsh-resource://file/session/s1/a.ts')
+    dispose()
+    right.openResource('dsh-resource://changes-review/session/s1/5/3')
+    ok('接管：dispose 还原原方法（HMR / 插件停用不留劫持）',
+      right.openResource === before && original.length === 2)
+    const inert = { openResource: undefined }
+    const noop = wrapChangesReviewOpen(inert, () => {})
+    ok('接管：服务无 openResource 时安全空转', typeof noop === 'function')
+    noop()
+  }
+}
+
 let fail = 0
 for (const [name, pass, detail] of checks) {
   console.log((pass ? '  ✓ ' : '  ✗ ') + name + (pass || !detail ? '' : ' — ' + detail))
