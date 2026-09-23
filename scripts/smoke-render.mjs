@@ -148,9 +148,11 @@ const slotProps = { fileActionsSlot: true, renderSlot: fakeRenderSlot }
 const contributed = render(cardProps({
   produced: [], presented: [{ path: 'out/report.html', seq: 11, index: 0 }],
 }, { presentedController: desktopController({ available: true }), ...slotProps }))
-check('动作子槽：卡片逐文件渲染 deliverables.file.actions（key 正确、带 fallback）',
-  slotCalls.length === 1 && slotCalls[0].key === 'deliverables.file.actions'
+check('动作子槽：卡片逐文件渲染自有子槽 dsh-file-review-kcoder.file.actions（key 正确、带 fallback）',
+  slotCalls.length === 1 && slotCalls[0].key === 'dsh-file-review-kcoder.file.actions'
   && slotCalls[0].hasFallback === true)
+check('动作子槽：渲染键绝不为 upstream 的 deliverables.file.actions（子键单一声明者，撞名会拖垮 web boot）',
+  slotCalls.every(call => call.key !== 'deliverables.file.actions'))
 check('动作子槽：宿主贡献的动作渲染进卡片',
   contributed.includes('data-file-action="contributed"') && contributed.includes('用 VS Code 打开')
   && contributed.includes('显示文件位置'))

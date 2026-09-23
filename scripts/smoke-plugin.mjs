@@ -251,17 +251,21 @@ if (typeof frt?.parseChangesReviewAddress === 'function') {
   }
 }
 
-// ─── 行为回归：0.1.7 共享文件动作子槽（用其它应用打开 / 显示文件位置）──────
-// dsh 0.1.7 把交付卡的原生动作位改成共享 list 子槽 deliverables.file.actions：
-// 由认领轮尾行的条目声明（fork ui-deliverables index.ts:83），ui-open-in-app
-// 向它贡献带应用清单的控件（fork ui-open-in-app index.ts:83-88）。KCoder 部署
-// 关掉原生行（tailCard:false）后没有人声明该子槽 → 控件不出现。本插件既然
-// 认领同一行，就必须在自己的 register children 里声明它。
+// ─── 行为回归：本插件自有的文件动作子槽（用其它应用打开 / 显示文件位置）────
+// dsh 0.1.7 把交付卡的原生动作位改成 list 子槽 deliverables.file.actions，由
+// 原生交付卡所在行声明（fork ui-deliverables index.ts:83），ui-open-in-app 向
+// 它贡献带应用清单的控件（fork ui-open-in-app index.ts:83-88）。一个子键只能
+// 有一个声明者：第二个声明者 register 抛错 → 该 entry 的 apply 失败 →
+// assertEntriesActive 把整个 web boot 判为失败（1.0.9 现场：本插件先注册拿到
+// 键，原生卡随后声明 → ui-deliverables.apply 抛「already declared」→ 页面停在
+// 「Failed to load plugins」）。归属无法在运行时协商（先到先得，慢的必抛），
+// 因此本插件只声明自己的命名空间键，永不认领 upstream 的键。
 //
-// 断言面：注册选项真的带上 children（逐字对齐 fork 的 kind/scope）+ KCoder
-// 共享渲染面开关；注册被拒（既有声明者且注册表不认该开关）时退回无 children
-// 形态、不炸插件，并且 inject 面如实报告 fileActionsSlot=false——卡片据此
-// 才不会对未声明的子键调用 renderSlot（那会被渲染器直接抛错）。
+// 断言面：注册选项带上 children 且键为本插件自有键（kind/scope 仍逐字对齐 fork
+// 的形状）；不带 rendersExistingChildren（兜底开关只保护第二个声明者，本设计
+// 不依赖注册顺序）；注册被拒时退回无 children 形态、不炸插件，并且 inject 面
+// 如实报告 fileActionsSlot=false——卡片据此才不会对未声明的子键调用 renderSlot
+// （那会被渲染器直接抛错）。
 if (typeof frt?.apply === 'function') {
   const locales = { register: () => () => {}, getSnapshot: () => ({ active: 'zh' }) }
   const makeCtx = (register) => {
@@ -288,13 +292,17 @@ if (typeof frt?.apply === 'function') {
   const declared = entries.find(entry => entry.options?.name === 'conversation.chat.turnTail')
   ok('动作子槽：轮尾行注册仍只有一条（id dsh-file-review-tab）',
     entries.length === 1 && declared !== undefined && declared.options.id === 'dsh-file-review-tab')
-  ok('动作子槽：注册项声明 deliverables.file.actions（list / session，逐字对齐 fork）',
+  ok('动作子槽：注册项声明自有键 dsh-file-review-kcoder.file.actions（list / session）',
     declared !== undefined
-    && JSON.stringify(declared.options.children?.['deliverables.file.actions'])
+    && JSON.stringify(declared.options.children?.['dsh-file-review-kcoder.file.actions'])
       === '{"kind":"list","scope":"session"}',
     JSON.stringify(declared?.options?.children))
-  ok('动作子槽：带上共享渲染面开关（重复声明不致命，KCoder fork 的 rendersExistingChildren）',
-    declared?.options?.rendersExistingChildren === true)
+  ok('动作子槽：绝不认领 upstream 的 deliverables.file.actions（子键单一声明者，撞名即 web boot 失败）',
+    declared?.options?.children?.['deliverables.file.actions'] === undefined
+    && (declared?.options?.children === undefined
+      || Object.keys(declared.options.children).every(key => key !== 'deliverables.file.actions')))
+  ok('动作子槽：不依赖 rendersExistingChildren 兜底（只保护第二个声明者，本设计不靠注册顺序）',
+    declared?.options?.rendersExistingChildren === undefined)
   ok('动作子槽：注册的组件是卡片组件', typeof declared?.component === 'function')
   const face = declared?.options?.inject?.('s1')
   ok('动作子槽：inject 面报告 fileActionsSlot=true（声明成功，卡片可 renderSlot）',
@@ -304,13 +312,13 @@ if (typeof frt?.apply === 'function') {
     && typeof face?.openInSidebarTab === 'function' && typeof face?.openPreview === 'function'
     && face?.projectRoot === undefined)
 
-  // 兜底：注册表不认该开关且子键已被声明（上游 tailCard 默认 true 的装配，
-  // 或未带 KCoder 补丁的 0.1.7-alpha.1）→ register 抛错，插件必须退回无
-  // children 的形态继续工作，而不是整行消失。诊断行同时收进数组：既是断言
-  // 对象，也让这条预期内的一次性告警不出现在发布冒烟的输出里。
+  // 兜底：任何 register 抛错（例如宿主环境里该键被别的条目抢先声明、或载具的
+  // 注册表更严）→ 插件必须退回无 children 的形态继续工作，而不是整行消失。
+  // 诊断行同时收进数组：既是断言对象，也让这条预期内的一次性告警不出现在
+  // 发布冒烟的输出里。
   const fallbackEntries = []
   const fallbackCtx = makeCtx((options, component) => {
-    if (options?.children !== undefined) throw new Error('slot "deliverables.file.actions" is already declared (by ui-deliverables)')
+    if (options?.children !== undefined) throw new Error('slot "dsh-file-review-kcoder.file.actions" is already declared (by a re-entrant host)')
     fallbackEntries.push({ options, component })
     return () => {}
   })
