@@ -251,6 +251,174 @@ if (typeof frt?.parseChangesReviewAddress === 'function') {
   }
 }
 
+// ─── 行为回归：0.1.7 共享文件动作子槽（用其它应用打开 / 显示文件位置）──────
+// dsh 0.1.7 把交付卡的原生动作位改成共享 list 子槽 deliverables.file.actions：
+// 由认领轮尾行的条目声明（fork ui-deliverables index.ts:83），ui-open-in-app
+// 向它贡献带应用清单的控件（fork ui-open-in-app index.ts:83-88）。KCoder 部署
+// 关掉原生行（tailCard:false）后没有人声明该子槽 → 控件不出现。本插件既然
+// 认领同一行，就必须在自己的 register children 里声明它。
+//
+// 断言面：注册选项真的带上 children（逐字对齐 fork 的 kind/scope）+ KCoder
+// 共享渲染面开关；注册被拒（既有声明者且注册表不认该开关）时退回无 children
+// 形态、不炸插件，并且 inject 面如实报告 fileActionsSlot=false——卡片据此
+// 才不会对未声明的子键调用 renderSlot（那会被渲染器直接抛错）。
+if (typeof frt?.apply === 'function') {
+  const locales = { register: () => () => {}, getSnapshot: () => ({ active: 'zh' }) }
+  const makeCtx = (register) => {
+    const ctx = {
+      locale: locales,
+      effect: (fn) => fn(),
+      on: () => () => {},
+      remote: { $mount: () => Promise.resolve(() => {}) },
+      get: (name) => (name === 'uiConversation' ? { events: { register: () => () => {} } } : undefined),
+      inject: () => ({ dispose: () => {} }),
+      betterSidebar: { registerTab: () => () => {} },
+      sessions: { list: { getSnapshot: () => ({ byId: {} }) }, scope: () => undefined },
+      slots: { inject: (key, contribute) => { contribute(); return () => {} }, register },
+    }
+    return ctx
+  }
+  const capture = () => {
+    const entries = []
+    const ctx = makeCtx((options, component) => { entries.push({ options, component }); return () => {} })
+    frt.apply(ctx)
+    return entries
+  }
+  const entries = capture()
+  const declared = entries.find(entry => entry.options?.name === 'conversation.chat.turnTail')
+  ok('动作子槽：轮尾行注册仍只有一条（id dsh-file-review-tab）',
+    entries.length === 1 && declared !== undefined && declared.options.id === 'dsh-file-review-tab')
+  ok('动作子槽：注册项声明 deliverables.file.actions（list / session，逐字对齐 fork）',
+    declared !== undefined
+    && JSON.stringify(declared.options.children?.['deliverables.file.actions'])
+      === '{"kind":"list","scope":"session"}',
+    JSON.stringify(declared?.options?.children))
+  ok('动作子槽：带上共享渲染面开关（重复声明不致命，KCoder fork 的 rendersExistingChildren）',
+    declared?.options?.rendersExistingChildren === true)
+  ok('动作子槽：注册的组件是卡片组件', typeof declared?.component === 'function')
+  const face = declared?.options?.inject?.('s1')
+  ok('动作子槽：inject 面报告 fileActionsSlot=true（声明成功，卡片可 renderSlot）',
+    face?.fileActionsSlot === true)
+  ok('动作子槽：inject 面仍带回既有交付面（控制器 + 收窄/审查回调）',
+    typeof face?.presentedController === 'object' && typeof face?.collectReviews === 'function'
+    && typeof face?.openInSidebarTab === 'function' && typeof face?.openPreview === 'function'
+    && face?.projectRoot === undefined)
+
+  // 兜底：注册表不认该开关且子键已被声明（上游 tailCard 默认 true 的装配，
+  // 或未带 KCoder 补丁的 0.1.7-alpha.1）→ register 抛错，插件必须退回无
+  // children 的形态继续工作，而不是整行消失。诊断行同时收进数组：既是断言
+  // 对象，也让这条预期内的一次性告警不出现在发布冒烟的输出里。
+  const fallbackEntries = []
+  const fallbackCtx = makeCtx((options, component) => {
+    if (options?.children !== undefined) throw new Error('slot "deliverables.file.actions" is already declared (by ui-deliverables)')
+    fallbackEntries.push({ options, component })
+    return () => {}
+  })
+  let fallbackThrew = false
+  const warnings = []
+  const realWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    frt.apply(fallbackCtx)
+  } catch (error) {
+    fallbackThrew = true
+  } finally {
+    console.warn = realWarn
+  }
+  ok('动作子槽：重复声明被拒时不炸插件（退回无 children 注册）',
+    fallbackThrew === false && fallbackEntries.length === 1
+    && fallbackEntries[0]?.options?.children === undefined
+    && warnings.some(message => message.includes('file-action child slot unavailable')),
+    warnings.join(' | '))
+  const fallbackFace = fallbackEntries[0]?.options?.inject?.('s1')
+  ok('动作子槽：退回形态下 inject 面报告 fileActionsSlot=false（卡片只用自带控件）',
+    fallbackFace?.fileActionsSlot === false)
+}
+
+// ─── 行为回归：原生打开路由的 application 参数（0.1.7 同款寻址）──────────
+// 上游 0.1.7 的交付卡把应用选择编码进同一条 open 路由（fork ui-deliverables
+// client/present-open.ts:133-134）：reveal 走 &action=reveal 且不带 application，
+// 显式应用走 &application=<encodeURIComponent(id)>，无参调用保持原样。
+// 不变量：新增参数不得改变历史无参调用的 URL 与返回语义。
+if (typeof frt?.PresentedOpenController === 'function' && typeof frt?.presentedFileUrl === 'function') {
+  const { PresentedOpenController, presentedFileUrl } = frt
+  const calls = []
+  const realFetch = globalThis.fetch
+  let nextResponse = { ok: true, status: 204 }
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, method: init?.method })
+    if (nextResponse instanceof Error) throw nextResponse
+    return nextResponse
+  }
+  const respond = (response) => { nextResponse = response }
+  try {
+    ok('打开路由：URL 与原实现逐字一致',
+      presentedFileUrl('s1', 2, 0) === 'api/present.open?sessionId=s1&seq=2&index=0',
+      presentedFileUrl('s1', 2, 0))
+
+    const controller = new PresentedOpenController()
+    const baseline = presentedFileUrl('s1', 10, 0)
+    ok('打开路由：无参调用（历史形态）不追加任何查询参数',
+      (await controller.open('s1', 10, 0)) === null
+      && calls.length === 1 && calls[0].url === baseline && calls[0].method === 'POST'
+      && controller.state.getSnapshot()[baseline] === 'opened')
+
+    respond({ ok: true, status: 204 })
+    await controller.open('s1', 11, 0, 'reveal')
+    ok('打开路由：reveal 走 &action=reveal',
+      calls[1].url === `${presentedFileUrl('s1', 11, 0)}&action=reveal`
+      && controller.state.getSnapshot()[presentedFileUrl('s1', 11, 0)] === 'revealed')
+
+    respond({ ok: true, status: 204 })
+    await controller.open('s1', 12, 0, 'open', 'vscode')
+    ok('打开路由：显式应用走 &application=<id>',
+      calls[2].url === `${presentedFileUrl('s1', 12, 0)}&application=vscode`)
+
+    respond({ ok: true, status: 204 })
+    await controller.open('s1', 13, 0, 'open', 'Visual Studio Code')
+    ok('打开路由：application 值百分号编码',
+      calls[3].url === `${presentedFileUrl('s1', 13, 0)}&application=Visual%20Studio%20Code`)
+
+    respond({ ok: true, status: 204 })
+    await controller.open('s1', 14, 0, 'reveal', 'vscode')
+    ok('打开路由：reveal 忽略 application（与 fork 同规则）',
+      calls[4].url === `${presentedFileUrl('s1', 14, 0)}&action=reveal`)
+
+    respond({ ok: false, status: 422 })
+    ok('打开失败：422（主机无该路径）报 openError 并留 nativeUnavailable 状态',
+      (await controller.open('s1', 15, 0)) === 'openError'
+      && controller.state.getSnapshot()[presentedFileUrl('s1', 15, 0)] === 'nativeUnavailable')
+
+    respond({ ok: false, status: 500 })
+    ok('打开失败：5xx 报 openError', (await controller.open('s1', 16, 0)) === 'openError')
+
+    respond({ ok: false, status: 500 })
+    ok('打开失败：reveal 失败报 revealError', (await controller.open('s1', 17, 0, 'reveal')) === 'revealError')
+
+    respond(new Error('transport down'))
+    ok('打开失败：传输异常报 openError（不是未捕获拒绝）',
+      (await controller.open('s1', 18, 0)) === 'openError'
+      && controller.state.getSnapshot()[presentedFileUrl('s1', 18, 0)] === 'error')
+
+    respond({ ok: true, status: 204 })
+    const pendingUrl = presentedFileUrl('s1', 19, 0)
+    const first = controller.open('s1', 19, 0)
+    const reentrant = controller.open('s1', 19, 0)
+    const phaseDuring = controller.state.getSnapshot()[pendingUrl]
+    ok('打开路由：同一坐标在手势进行中重入 → 不再发请求、返回 null',
+      phaseDuring === 'opening' && (await reentrant) === null && (await first) === null
+      && calls.filter(call => call.url === pendingUrl).length === 1)
+
+    await controller.dispose()
+    respond({ ok: true, status: 204 })
+    ok('打开路由：dispose 后不再发请求、返回 null',
+      (await controller.open('s1', 20, 0)) === null
+      && calls.every(call => call.url !== presentedFileUrl('s1', 20, 0)))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+}
+
 let fail = 0
 for (const [name, pass, detail] of checks) {
   console.log((pass ? '  ✓ ' : '  ✗ ') + name + (pass || !detail ? '' : ' — ' + detail))

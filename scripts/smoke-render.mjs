@@ -124,6 +124,106 @@ const controller = new FakeController()
 const withController = render(cardProps({ produced: [], presented: [{ path: 'x.md', seq: 5, index: 0 }] }, { presentedController: controller }))
 check('控制器未就绪时仍渲染卡片', withController.includes('x.md'))
 
+// 7. 0.1.7 共享文件动作子槽：卡片逐文件渲染它（dsh-file-review 1.0.9）。
+// 宿主提供该槽内容时，动作位交给共享控件（用其它应用打开 / 显示文件位置）；
+// owner props 逐字对齐 fork（actionUrl/available/pending/onAction），
+// actionUrl 必须是本插件原生打开链路的那条路由。
+const slotCalls = []
+/** Controller fixture with a settled desktop answer (see FakeController above). */
+const desktopController = ({ available, fileManager = 'finder' }) => {
+  const fixture = new FakeController()
+  fixture.values.host = { name: 'Host', available, fileManager }
+  return fixture
+}
+// 占位贡献者：镜像 fork ui-open-in-app 的 FileRouteAction 期望（读 owner
+// props、用 actionUrl 查应用清单、用 onAction 执行手势，桌面不可用时退场）。
+const fakeRenderSlot = (key, owner, opts) => {
+  slotCalls.push({ key, owner, hasFallback: opts?.fallback != null })
+  if (!owner.available) return null
+  return React.createElement('span', { 'data-file-action': 'contributed', 'data-action-url': owner.actionUrl },
+    React.createElement('button', { type: 'button', 'data-open-target': 'file' }, '用 VS Code 打开'),
+    React.createElement('button', { type: 'button', 'data-open-path-reveal': '' }, '显示文件位置'))
+}
+const slotProps = { fileActionsSlot: true, renderSlot: fakeRenderSlot }
+const contributed = render(cardProps({
+  produced: [], presented: [{ path: 'out/report.html', seq: 11, index: 0 }],
+}, { presentedController: desktopController({ available: true }), ...slotProps }))
+check('动作子槽：卡片逐文件渲染 deliverables.file.actions（key 正确、带 fallback）',
+  slotCalls.length === 1 && slotCalls[0].key === 'deliverables.file.actions'
+  && slotCalls[0].hasFallback === true)
+check('动作子槽：宿主贡献的动作渲染进卡片',
+  contributed.includes('data-file-action="contributed"') && contributed.includes('用 VS Code 打开')
+  && contributed.includes('显示文件位置'))
+check('动作子槽：actionUrl 指向本插件原生打开链路（Session 事件坐标）',
+  slotCalls[0]?.owner?.actionUrl === 'api/present.open?sessionId=s1&seq=11&index=0',
+  String(slotCalls[0]?.owner?.actionUrl))
+check('动作子槽：owner props 形状逐字对齐 fork（available/pending/onAction）',
+  slotCalls[0]?.owner?.available === true && slotCalls[0]?.owner?.pending === false
+  && typeof slotCalls[0]?.owner?.onAction === 'function')
+
+// 8. 手势转发：owner.onAction(action, application) 必须落到控制器的同一坐标 +
+// application 参数（0.1.7 的「用其它应用打开」），并把失败种类回传给共享控件。
+const opened = []
+const hostReady = desktopController({ available: true })
+hostReady.open = (sessionId, seq, index, action, application) => {
+  opened.push([sessionId, seq, index, action, application ?? null])
+  return Promise.resolve('openError')
+}
+render(cardProps({ produced: [], presented: [{ path: 'a.md', seq: 21, index: 2 }] }, { presentedController: hostReady, ...slotProps }))
+const liveOwner = slotCalls[1].owner
+const gestureOpen = await liveOwner.onAction('open', 'vscode')
+const gestureReveal = await liveOwner.onAction('reveal')
+check('动作子槽：onAction 透传坐标 + application（用其它应用打开）',
+  JSON.stringify(opened) === JSON.stringify([['s1', 21, 2, 'open', 'vscode'], ['s1', 21, 2, 'reveal', null]]),
+  JSON.stringify(opened))
+check('动作子槽：onAction 回传失败种类给共享控件（fork 的 PresentedOpenFailure）',
+  gestureOpen === 'openError' && gestureReveal === 'openError')
+render(cardProps({ produced: [], presented: [{ path: 'b.md', seq: 22, index: 0 }] }, { ...slotProps, presentedController: undefined }))
+check('动作子槽：无控制器时 onAction 安全返回 null（不抛）',
+  (await slotCalls[2].owner.onAction('open')) === null)
+
+// 9. 逐文件粒度 + 折叠不改变动作位：两个交付 → 两次渲染、坐标各自独立。
+slotCalls.length = 0
+render(cardProps({
+  produced: [],
+  presented: [{ path: 'one.md', seq: 31, index: 0 }, { path: 'two.md', seq: 32, index: 3 }],
+}, slotProps))
+check('动作子槽：逐文件渲染（两个交付 → 两次，坐标各自独立）',
+  slotCalls.length === 2
+  && slotCalls[0].owner.actionUrl === 'api/present.open?sessionId=s1&seq=31&index=0'
+  && slotCalls[1].owner.actionUrl === 'api/present.open?sessionId=s1&seq=32&index=3')
+
+// 10. 未声明子槽的注册（fileActionsSlot=false / 旧载具无 renderSlot）绝不调用
+// renderSlot——对未声明的子键调用会被渲染器抛错并让整行退位——并保留自带控件。
+slotCalls.length = 0
+const undeclared = render(cardProps(
+  { produced: [], presented: [{ path: 'c.md', seq: 41, index: 0 }] },
+  { renderSlot: fakeRenderSlot },
+))
+check('动作子槽：未拿到声明时不调用 renderSlot，自带控件仍在',
+  slotCalls.length === 0 && undeclared.includes('c.md 的更多文件操作')
+  && !undeclared.includes('data-file-action="contributed"'))
+
+// 11. 桌面不可用：owner.available=false，贡献者按 fork 的 FileRouteAction 退场
+// （返回 null）——卡片自身照常渲染。
+slotCalls.length = 0
+const absent = render(cardProps(
+  { produced: [], presented: [{ path: 'd.md', seq: 51, index: 0 }] },
+  { presentedController: desktopController({ available: false }), ...slotProps },
+))
+check('动作子槽：桌面不可用时 available=false，贡献者退场也不影响卡片渲染',
+  slotCalls.length === 1 && slotCalls[0].owner.available === false
+  && absent.includes('d.md') && !absent.includes('data-file-action="contributed"'))
+
+// 12. 手势进行中：pending=true 透传给共享控件（控件据此禁用按钮）。
+slotCalls.length = 0
+const pendingController = desktopController({ available: true })
+// 状态键就是卡片交给共享控件的 actionUrl（本插件的原生打开路由）。
+pendingController.values.state = { 'api/present.open?sessionId=s1&seq=61&index=0': 'opening' }
+render(cardProps({ produced: [], presented: [{ path: 'e.md', seq: 61, index: 0 }] }, { presentedController: pendingController, ...slotProps }))
+check('动作子槽：手势进行中 pending=true（共享控件禁用动作）',
+  slotCalls.length === 1 && slotCalls[0].owner.pending === true)
+
 let fail = 0
 for (const [name, pass, detail] of results) {
   console.log((pass ? '  ✓ ' : '  ✗ ') + name + (pass || !detail ? '' : ' — ' + detail))
